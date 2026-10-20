@@ -1,0 +1,7 @@
+*.exe
+*.o
+*.obj
+aimeter.ini
+boot.log
+*.log
+.vs/
