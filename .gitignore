@@ -5,3 +5,4 @@ aimeter.ini
 boot.log
 *.log
 .vs/
+build/
