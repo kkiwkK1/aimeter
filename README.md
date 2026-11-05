@@ -1,179 +1,273 @@
-# AiMeter
+# Desktop Board（desk.exe）
 
-> A tiny, pixel-art desktop widget for Windows 11 that keeps an eye on your AI
-> service balances and quotas — **~16 MB working set, 0% idle CPU, no GPU, no web view**.
+> 一块常驻桌面层的**洞洞板**：一个进程、一块板、若干可自由摆放的模块卡片。
+> 当前模块：**AiMeter**（DeepSeek / Codex / CommandCode / 本机 token）和
+> **Server Status**（SSH 服务器状态）。
+> 约 **20 MB 工作集、空闲 0% CPU、不抢焦点、始终置底**。
 
-一个用 Win32 + 手写像素渲染实现的桌面小组件，常驻在桌面层，
-实时显示 DeepSeek 余额与今日消耗、本机 DSH 的今日 token 用量，
-以及 Codex（ChatGPT Plus）的 5 小时 / 每周额度。
+![桌面洞洞板](docs/desk-board.png)
 
-同时，项目把这次实现里可复用的部分抽成了一个小框架（`src/widget`）：
-**新增一个同类组件 = 一个数据结构 + 四个小函数**，窗口、托盘、热键、拖动、
-配置持久化、定时刷新和工作线程都由框架负责。
+## 它是什么
 
-![screenshot](docs/screenshot.png)
+- **一块板**：默认占据屏幕右侧 760×800（可按工作区缩放），半透明点阵玻璃，
+  可拖动、可缩放，始终压在普通窗口之下。
+- **多张卡**：每个模块是一张独立卡片，拖动标题条自由摆放；8px 吸附，松手时
+  如果压到别的卡片会自动落到最近空位。
+- **内联详情**：点卡片标题条右侧的 `+`/`-` 就地展开，不再有第二个弹窗。
+- **可增删**：右键板标题条或托盘 → Add module / Tidy board / Refresh / Exit；
+  卡片菜单里有 Settings / Details / Refresh / Remove card。
+- **不整窗穿透**：卡片和板面控件始终接收鼠标；**没有卡片的空白点**交给桌面，
+  桌面图标照常可点。`board.solid=1` 可以改成整块板都接收点击。
+- **置底不抢焦点**：点击卡片不会改变当前前台窗口；菜单/设置输入框只在自己的
+  窗口里取焦点。
+- **一套视觉**：板面/卡片/行/详情全部由 `src/widget/skin.*` 的令牌和原语
+  绘制；板面 2px 边框 + 10px 像素圆角，卡片 1px + 6px，新增模块自动融入。
+- **拖动节拍**：高精度时钟按 60 fps 调度，不再被 15.6ms 系统 tick 压到约 32 fps；
+  松手落盘在后台线程，不阻塞 UI。
 
-## 特性
+整屏设计稿（壁纸上的比例参考；实际边框/圆角以当前渲染为准）：
 
-- **极低开销**：私有内存约 3 MB，工作集约 16 MB，空闲时 CPU 与 GPU 均为 0
-- **零依赖渲染**：不用 Direct2D、不用 DirectWrite、不加载任何字体文件。
-  一个 DIB 缓冲区 + 手写 5×7 点阵字体，逐像素写入
-- **永远在桌面层**：窗口固定在 z 序最底部（紧跟 `Progman` 之上），
-  不会盖住任何应用窗口，也永远不会抢焦点
-- **点击穿透**：默认穿透，鼠标事件直接落到桌面；`Ctrl+Alt+W` 进入编辑模式后可拖动
-- **系统托盘**：右键菜单提供刷新、设置、开机自启、退出
-- **位置记忆 / 开机自启**：位置与组件自己的状态存在 exe 同目录的 `<id>.ini`
-- **单实例**：重复启动会直接退出
-- **不阻塞消息循环**：网络请求在 worker 线程里跑，界面先画缓存再刷新
-- **本地 token 视图**：从 DSH 会话缓存读取今日 input / cache / output token，
-  `Ctrl+Alt+D` 查看明细；不联网、不上传
+![整屏效果图](docs/design/desk-board-mockup.png)
 
-## 支持的服务
+## 产物
 
-| 服务 | 数据来源 | 状态 |
-|---|---|---|
-| DeepSeek | `GET https://api.deepseek.com/user/balance` + 本机 DSH 会话日志 | ✅ 余额 + 今日消耗 + 本机 token |
-| Codex / ChatGPT Plus | 本地 `~/.codex/sessions/**/rollout-*.jsonl` 中的 `rate_limits` | ✅ 5h / 周额度百分比 |
-| Z.AI Coding Plan | ZCode 内部 RPC，无公开接口 | ⏸ 代码中预留开关，默认隐藏 |
+| 产物 | 说明 |
+|---|---|
+| `desk.exe` | 洞洞板 + Account / Servers 卡片 |
+| `srvctl.exe` | 命令行搭档：status / exec / ssh / hosts / doctor |
+| `archive/` | 旧 aimeter/server/sshpad/clock、AI Mini、旧 host 框架和旧 exe；只作参考，不再构建 |
 
-Codex 的额度**完全离线读取**，不产生任何网络请求：每次你使用 Codex CLI，
-它会把 `primary`（5 小时窗口）和 `secondary`（每周窗口）的 `used_percent`
-写进会话日志，AiMeter 只读最新那一条。
-
-DeepSeek 的余额接口只有钱，没有 token。AiMeter 的 token 数来自
-`~/.dsh/storages/session_projcache` 里的会话统计，因此口径是
-**本机 + DSH**，不是账户总量；界面统一标成 `LOCAL`，不会和账户级花费混在一起。
-设计探索（当前实现为 A 紧凑版）：[token 布局示意](docs/design/deepseek-token-layouts.png)。
-
-## 框架：新组件 = 一个数据结构和四个函数
-
-宿主（`src/widget/host.cpp`）提供：单实例、桌面层窗口、托盘、全局热键、
-点击穿透 / 编辑拖动、位置与状态持久化、开机自启、定时刷新、后台线程、
-以及一个像素风的输入框。组件只需要描述**数据从哪来**和**长什么样**：
-
-```cpp
-struct ClockData { std::wstring time; };
-
-class Clock : public wg::WidgetT<ClockData> {
-    wg::Desc Describe() override { return {L"clock", L"Desktop Clock", 220}; }
-    void LoadData(ClockData& d) override { /* UI 线程，只跑一次 */ }
-    void RefreshData(ClockData& d) override { /* worker 线程，可以阻塞 */ }
-    int  HeightOf(const ClockData&) const override { return 78; }
-    void PaintData(const ClockData& d, wg::Canvas& c) override { /* UI 线程 */ }
-};
-```
-
-`WidgetT<Data>` 自带双缓冲：`RefreshData` 只写 staging，`PaintData` 只读
-shown，两者不会同时执行，所以组件代码里不需要任何锁。
-
-### 写一个新组件
+## 快速开始
 
 ```bat
-powershell -ExecutionPolicy Bypass -File tools\new-widget.ps1 -Name weather
-rem 编辑 src\widgets\weather\weather.cpp 里的 RefreshData / PaintData
-cmd /c build.bat
-build\bin\weather.exe
-```
-
-完整说明（生命周期、线程模型、API 速查、约定与坑）见
-[docs/framework.md](docs/framework.md)。
-
-## 目录结构
-
-```
-src/widget/            框架，编译成 build\libwg.a
-  canvas.*             像素画布、5×7 字体、主题、面板/进度条
-  view.*               标准 “标签 / 数值 / 进度条” 列表
-  widget.h             Widget 契约 + WidgetT<Data> 双缓冲
-  host.*               窗口、托盘、热键、拖动、持久化、定时器、worker
-  store.*              exe 同目录的 UTF-16 key=value 配置
-  http.*               WinHTTP GET
-  secrets.*            Windows 凭据管理器
-  prompt.*             像素风单行输入框
-src/widgets/aimeter/   现有组件 + DeepSeek / Codex / DSH token 数据源 + 明细面板
-src/widgets/clock/     最小示例（无网络、无配置）
-tests/render.cpp       无窗口渲染测试（产出 BMP）
-tools/new-widget.ps1   脚手架
 build.bat
-docs/
-legacy/app.cpp         旧版单文件实现，仅作对照，不参与构建
+powershell -ExecutionPolicy Bypass -File tools\sign-local.ps1 -Path build\bin\desk.exe
+build\bin\desk.exe
 ```
 
-## 构建
+- 第一次运行会创建 `build\bin\desk.ini`，把板子放在右侧，并移除旧的
+  `AiMeter` / `Server Status` / `SSH Pad` 自启项、设置 `Desktop Desk` 自启。
+- 右键**板标题条**（顶部 `DESKTOP BOARD` 那一行）或托盘图标打开板菜单。
+- 右键**卡片标题条**打开卡片菜单。
 
-需要 **MinGW-w64 GCC**（开发时使用 WinLibs GCC 16.2.0，UCRT + POSIX 线程）
-和 Windows 10/11 x64。
-
-```bat
-build.bat        rem 框架 + 所有组件 -> build\bin\*.exe
-build.bat test   rem 额外跑无窗口渲染测试 -> build\preview.bmp
-```
-
-`build.bat` 默认从 `C:\Tools\mingw64\bin` 找 `g++`，改顶部 `TOOLROOT` 即可。
-所有中间文件和产物都在 `build\` 下，并且故意使用**相对路径**：
-MinGW 的汇编器无法处理非 ASCII 路径（例如中文用户名 / 中文目录）。
-
-产物：`build\bin\aimeter.exe`（约 1.3 MB）和 `build\bin\clock.exe`，
-静态链接，无运行时依赖。旧版放在仓库根目录的 `aimeter.ini` 会被
-`build.bat` 一次性复制到 `build\bin\`，位置不会丢。
-
-## 使用
+## 操作
 
 | 操作 | 说明 |
 |---|---|
-| `Ctrl+Alt+W` | 切换编辑模式（可拖动、右键菜单） |
-| `Ctrl+Alt+D` | 打开/关闭 token 明细（也可用托盘 Details...） |
+| 拖卡片标题条 | 移动卡片；标题条右侧 28px 是 `+`/`-` 展开按钮，不参与拖动 |
+| 拖板标题条 | 移动整块板 |
+| 拖板右下角 | 缩放板；最小 400×420，最大当前显示器工作区 |
+| 左键卡片标题条右侧 `+`/`-` | 展开/收起该卡片详情 |
+| 右键卡片 | Settings（API Key / SSH Hosts）、Details、Refresh、Remove card |
+| 右键板标题条 / 托盘 | Add module、Tidy board、Refresh all、Show grid、Empty area passes clicks、Start with Windows、Exit |
+| 左键虚线 `ADD MODULE` 槽 | 打开同一个板菜单 |
+| `Ctrl+Alt+W` | 打开板菜单 |
+| `Ctrl+Alt+R` | 刷新所有卡片 |
+| `Ctrl+Alt+D` | 展开/收起所有可展开的卡片 |
 | `Ctrl+Alt+Q` | 退出 |
-| 托盘图标双击 | 同 `Ctrl+Alt+W` |
-| 托盘右键 | 刷新 / 设置 / 详情 / 开机自启 / 退出 |
+| 托盘双击 | 同 `Ctrl+Alt+D` |
 
-### 配置 API Key
+卡片位置、展开状态、板的位置和尺寸都存在 `desk.ini`；下次启动原样恢复。
 
-`Ctrl+Alt+W` → 右键 → **Settings...**，粘贴 DeepSeek 的 API key 回车即可。
+## 当前模块
 
-- key 通过 `CredWriteW` 存入 **Windows 凭据管理器**，目标名 `AiMeter/DeepSeek`，
-  不落任何明文文件
-- 查询余额是只读接口，不消耗 token、不扣费
-- 换 key 时重新打开设置窗输入新的即可
+### Account（AiMeter）
 
-### 配置文件
+| 数据 | 来源 | 状态 |
+|---|---|---|
+| DeepSeek 余额 / 今日消耗 | `GET api.deepseek.com/user/balance` + 本机快照 | ✅ |
+| Codex / ChatGPT Plus 5h / 周额度 | 本地 `~/.codex/sessions/**/rollout-*.jsonl` 的 `rate_limits` | ✅ 完全离线 |
+| CommandCode 5h / 周额度 | `GET api.commandcode.ai/alpha/billing/credits` | ✅ |
+| 本机 DSH token | `~/.dsh/storages/session_projcache` | ✅ 标成 `LOCAL` |
 
-`build\bin\aimeter.ini`（与 exe 同目录，UTF-16 编码）：
+- 刷新 300s；收起高 144px，展开高 269px。
+- 卡片菜单：`DeepSeek API Key...`、`CommandCode API Key...`；key 存在 Windows
+  凭据管理器（`AiMeter/DeepSeek`、`AiMeter/CommandCode`），不落明文文件。
+- CommandCode 没手动设置时自动回退到 `~/.dsh/.credentials.yaml` 的
+  `COMMANDCODE_API_KEY`。
+- 详情里的 token 只统计**本机 DSH**，界面标 `LOCAL`，不和账户余额混算。
+
+### Servers（Server Status）
+
+- 每台一行：在线状态 + 往返耗时，CPU / 内存 / 根分区 / 负载 / uptime。
+- 通过本机 OpenSSH 和已有 key 读远端 `/proc`、`df`，不装 agent。
+- 刷新 30s；最多 8 台；每台一次只读探测，单台 8s 超时，互不拖累。
+- 卡片菜单：`SSH Hosts...`，写回 `server.ini` 的 `hosts=`；
+  `srvctl status` / `srvctl hosts` 读同一份配置，改完立即生效。
+- 展开详情补充失败错误、`CORES`、SSH 客户端路径和 `UPDATED`，不重复行内指标。
+
+状态值：`UP 120MS` / `TIMEOUT` / `AUTH` / `DNS` / `REFUSED` / `HOSTKEY` /
+`NO SSH` / `NO DATA`。绿色 < 75%，黄色 ≥ 75%，红色 ≥ 90%。
+
+详细配置、探测脚本和排错见 [docs/server.md](docs/server.md)。
+
+## 配置
+
+配置文件都在 exe 同目录；目录不可写时回退到 `%APPDATA%\Desktop Desk`。
+
+`desk.ini`（UTF-16 key=value）：
 
 ```ini
-x=2240          ; 窗口位置（框架写入）
-y=1300
-day=2026-10-20  ; 当日快照日期（组件写入）
-start=720       ; 当天开局余额（分）
-last=687        ; 最近一次余额（分）
+board.x=784
+board.y=24
+board.w=760
+board.h=800
+board.grid=1          rem 1 = 显示点阵
+board.solid=0         rem 1 = 整块板接收点击（默认空白点交给桌面）
+card.account.x=20
+card.account.y=32
+card.account.visible=1
+card.account.expanded=0
+card.servers.x=380
+card.servers.y=32
+card.servers.visible=1
+card.servers.expanded=0
 ```
 
-“今日消耗” = `start - 当前余额`。跨天时把 `last` 当作新一天的开局值，
-所以即使深夜没开机，第二天也能算出准确差额。
+模块自己的数据仍在原来的文件里：`aimeter.ini`（余额快照、token 快照）、
+`server.ini`（hosts/ssh/key/timeout）。旧文件不需要迁移。
 
-token 快照另存为 `tok.day` / `tok.sum`（按 input / cache read / cache write /
-output 四个桶累计）以及每个会话的 `tok.s.<session-id>`，由组件维护，一般不用手改。
+**不要和新旧组件同时运行**：新旧都会更新同一份 `aimeter.ini` 快照；首次运行
+会清掉旧的失效自启项，并写 `Desktop Desk`。
 
-## 为什么不用 Direct2D
+## 新增一个模块
 
-第一版用 D2D 的 DC 渲染目标实现，功能正常，但**私有内存 51 MB**——
-D2D 在 DC 目标上会拉起软件光栅化设备，光它一个就吃掉 40 MB。
-改成“自己往 DIB 写 BGRA + `UpdateLayeredWindow`”之后降到 **2.9 MB**，
-顺带砍掉了 D2D/DWrite 的 DLL 依赖，启动也更快。
+```bat
+powershell -ExecutionPolicy Bypass -File tools\new-panel.ps1 -Name weather -Title WEATHER
+rem 编辑 src\panels\weather\weather.cpp 的 RefreshData / PaintBodyOf
+rem 在 src\apps\desk\main.cpp 的 CreateModules() 里加一行：
+rem   modules.push_back(CreateWeatherModule());
+build.bat
+```
 
-像素风本身不需要抗锯齿和亚像素排版，这正好让“最省”和“最像”重合。
+模块契约只有六个函数：
+
+```cpp
+struct WeatherData { std::vector<wg::Row> rows; };
+
+class WeatherModule : public wg::ModuleT<WeatherData> {
+public:
+    wg::ModuleSpec Describe() const override {
+        return wg::ModuleSpec{L"weather", L"WEATHER", L"weather.ini", 340, 600, false, false, {}};
+    }
+protected:
+    void LoadData(WeatherData&) override { ... }
+    void RefreshData(WeatherData& data) override { ... }   // worker 线程，可阻塞
+    int  BodyHeightOf(const WeatherData& data) const override {
+        return wg::skin::RowsHeight((int)data.rows.size());
+    }
+    void PaintBodyOf(const WeatherData& data, wg::Canvas& c, const wg::Rect& body) override {
+        wg::skin::Rows(c, body, data.rows, theme_);
+    }
+private:
+    wg::Theme theme_;
+};
+```
+
+- `RefreshData` 只写 staging，`PaintBodyOf` 只读 shown，Board 保证不同时执行，
+  所以模块里不需要锁。
+- 卡片宽 340 / 标题条 30 / 内边距 12 / 行距 32 由 `skin` 统一；模块只画 body，
+  不画外框、不建窗口。
+- 新模块自动出现在 **Add module** 菜单里；位置/展开状态由 Board 持久化。
+- 完整契约、视觉规范和测试见 [docs/desk.md](docs/desk.md)。
+
+## srvctl（命令行）
+
+`srvctl.exe` 保持独立：脚本、CI、一次性远程命令用它，桌面卡片回答“现在怎么样”。
+两者共用 `src/data/server/providers.cpp` 和 `server.ini`，状态码/超时/探测脚本
+完全一致。
+
+```bat
+build\bin\srvctl.exe status
+build\bin\srvctl.exe exec web-01 -- uptime
+build\bin\srvctl.exe hosts add db-01
+build\bin\srvctl.exe doctor
+```
+
+完整命令、JSON schema 和退出码见 [docs/cli.md](docs/cli.md)。
+
+## 归档
+
+旧的 aimeter / server / sshpad / clock、旧 `Widget/Host` 框架、AI Mini 实验、旧测试/
+脚手架和旧 exe 已移到 `archive/`，不参与 `build.bat`；清单和恢复方法见
+[archive/README.md](archive/README.md)。
+
+## 构建与测试
+
+需要 **MinGW-w64 GCC**（开发时 WinLibs GCC 16.2.0，UCRT + POSIX 线程）和
+Windows 10/11 x64。
+
+```bat
+build.bat            rem 框架 + desk.exe + srvctl.exe
+build.bat test       rem 额外跑无窗口测试，产出 build\preview.bmp / desk-board-preview.bmp 等
+```
+
+- 所有中间文件和产物都在 `build\` 下，故意使用相对路径：MinGW 汇编器无法处理
+  非 ASCII 路径（例如中文用户名/目录）。
+- `build.bat test` 在跑测试前用 `tools\sign-local.ps1` 给测试 exe 签名；如果
+  证书无法创建，脚本会失败，可以先手动运行 `tools\sign-local.ps1`。
+- **Windows 11 Smart App Control**：新构建的 exe 会被拦截，运行
+  `powershell -ExecutionPolicy Bypass -File tools\sign-local.ps1`
+  用当前用户的自签名证书重签即可（无需管理员、不上传；重建后要重签）。
+
+## 性能（本机实测）
+
+同一台 Windows 11 机器，2026-11-05，板 760×800，Account 收起 / Servers 1 台：
+
+| 指标 | desk.exe | 旧 aimeter + server |
+|---|---|---|
+| 进程 / 窗口 / 托盘 / 定时器 | 1 / 1 / 1 / 1 | 2 / 2 / 2 / 2 |
+| 工作集 | 约 19.9–20.4 MB | 约 32 MB |
+| 私有内存 | 约 5.1 MB 空闲 / 6.4 MB 刷新中 | 约 6 MB |
+| 线程 | 7 空闲 / 11 刷新中（含后台保存线程） | 各自 2–4 |
+| GDI / USER 对象 | 9 / 6 | 各自一套 |
+| 空闲 CPU | 10s 内 0 ms | 各自 0% |
+
+统一收益：一个 UI 线程、一个令牌/字体缓存、一个 WinHTTP/SSL 栈、一个托盘、
+一个自启项、一套热键、一张 DIB。拖动卡片只移动板内矩形，不创建/移动 HWND。
+
+## 目录
+
+```
+src/apps/desk/main.cpp      注册模块（一行一个）
+src/panels/account/         Account 卡片 + 视图
+src/panels/servers/         Servers 卡片 + 视图
+src/widget/board.*          洞洞板宿主：窗口、调度、拖动、菜单、托盘、持久化
+src/widget/board_layout.*   纯布局：吸附、避让、命中测试
+src/widget/skin.*           板面/卡片/行/详情/Add 槽的视觉令牌
+src/widget/module.h         Module / ModuleT<Data> 契约
+src/widget/geom.h           Rect
+src/widget/appenv.*         配置目录、自启
+src/widget/                 其余框架（canvas/cjk/view/layout/store/http/secrets/prompt/proc）
+src/data/                   共享数据源（aimeter / server）
+src/cli/                    srvctl
+archive/                    旧组件/实验/文档/二进制（不参与构建）
+tests/board_layout.cpp      布局/裁剪/命中的无窗口测试
+tests/desk_render.cpp       整板渲染测试（BMP）
+tools/new-panel.ps1         新模块脚手架
+tools/bench-desktop.ps1     资源/空闲 CPU 采样
+tools/sign-local.ps1        Smart App Control 下的本地签名
+docs/desk.md                洞洞板/模块/视觉/配置完整说明
+docs/server.md              Servers 卡片与共享探测的排错
+docs/cli.md                 srvctl
+archive/docs/sshpad.md      SSH Pad（已归档，不构建）
+```
 
 ## 已知限制
 
-- 点阵字体只有 ASCII（5×7）。中文、emoji 会显示为空白；需要时得换字体源
-- token 只统计**本机 DSH** 的调用，其他客户端/其他机器的用量不计入；
-  余额接口也没有账户级 token 汇总
-- 仅支持单显示器（主屏右下角，可拖动），固定像素，不随 DPI 缩放
-- 每个组件是一个独立进程（多组件共用一个宿主还没做）
-- 全局热键默认 `Ctrl+Alt+W/Q/D`，同时运行多个组件会互相抢注册，
-  可在 `wg::Options` 里改
-- 面板是普通顶层窗口，`Win+D`（显示桌面）会把它一起隐藏
-- Z.AI 行暂未启用
+- 单显示器、固定像素、不随 DPI 缩放；板的位置/尺寸在 `desk.ini`。
+- 空白板面默认把点击交给桌面，所以**板菜单在标题条/托盘/Add 槽上**，不是空白
+  处；要整板接收点击把 `board.solid` 设为 1。
+- 一个模块类型只放一张卡；卡片宽度由模块声明，不支持自由缩放；卡片比板高时
+  会被裁切，先放大板。
+- `Win+D`（显示桌面）会把板一起隐藏（普通顶层窗口的既有行为）。
+- 退出时如果 SSH 探测在飞，最多等一个 8s 探测超时。
+- Servers 只支持 Linux 目标（读 `/proc`），最多 8 台；`srvctl` 最多 32 台。
+- CommandCode 使用未公开的 `/alpha` 接口，字段变化时该行显示 `NO DATA`。
+- 不并入 SSH Pad / Clock / AI Mini；它们已归档在 `archive/`，不再构建；需要时按
+  `Module` 契约重新接入（终端卡需要更宽的板）。
+- Smart App Control 开启时，重建的 exe 需要重签。
+- 新旧组件不要同时运行（共享 `aimeter.ini` 的当日快照）。
 
 ## License
 

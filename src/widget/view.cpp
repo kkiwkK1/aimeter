@@ -8,31 +8,38 @@ int ListHeight(const ListStyle& style, size_t rows) {
     return style.pad * 2 + (int)(rows - 1) * style.rowPitch + content;
 }
 
-void DrawList(Canvas& canvas, const std::vector<Row>& rows, const ListStyle& style,
-              const Theme& theme, bool editing) {
-    const int width = canvas.width();
-    canvas.Panel(theme, editing);
+void DrawRows(Canvas& canvas, const Rect& area, const std::vector<Row>& rows,
+              const ListStyle& style, const Theme& theme) {
+    const int left = area.x + style.pad;
+    const int right = area.x + area.w - style.pad;
+    int y = area.y + style.pad;
 
-    int y = style.pad;
     for (const Row& row : rows) {
-        canvas.Text(row.label, (float)style.pad, (float)y, theme.label, style.scale);
-        canvas.TextRight(row.value, width - style.pad, (float)y, theme.text, style.scale);
+        canvas.Text(row.label, (float)left, (float)y, theme.label, style.scale);
+        canvas.TextRight(row.value, right, (float)y,
+                         row.valueColor ? row.valueColor : theme.text, style.scale);
 
         const int barY = y + style.TextHeight() + style.barGap;
         if (!row.note.empty() || !row.noteLeft.empty()) {
             if (!row.noteLeft.empty()) {
-                canvas.Text(row.noteLeft, (float)style.pad, (float)barY, theme.faint, 1.0f);
+                canvas.Text(row.noteLeft, (float)left, (float)barY, theme.faint, 1.0f);
             }
             if (!row.note.empty()) {
-                canvas.TextRight(row.note, width - style.pad, (float)barY,
+                canvas.TextRight(row.note, right, (float)barY,
                                  row.noteColor ? row.noteColor : theme.faint, 1.0f);
             }
         } else {
-            canvas.Bar(style.pad, barY, width - style.pad * 2, style.barHeight, row.frac,
+            canvas.Bar(left, barY, right - left, style.barHeight, row.frac,
                        row.accent ? row.accent : theme.ok, theme.track);
         }
         y += style.rowPitch;
     }
+}
+
+void DrawList(Canvas& canvas, const std::vector<Row>& rows, const ListStyle& style,
+              const Theme& theme, bool editing) {
+    canvas.Panel(theme, editing);
+    DrawRows(canvas, Rect{0, 0, canvas.width(), canvas.height()}, rows, style, theme);
 }
 
 } // namespace wg

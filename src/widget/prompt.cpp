@@ -1,8 +1,10 @@
 #include "widget/prompt.h"
 
 #include "widget/canvas.h"
+#include "widget/cjk.h"
 
 #include <windows.h>
+#include <imm.h>
 
 namespace wg {
 namespace {
@@ -47,9 +49,11 @@ void Repaint(PromptState& st, HWND hwnd) {
     st.canvas.Rect(kFieldX, kFieldY, fieldW, kFieldH, Rgba(0x33333F));
 
     const std::wstring shown = spec.mask ? Masked(st.input) : st.input;
-    st.canvas.Text(shown, (float)kFieldX + 6, (float)kFieldY + 7, Rgba(0xE8E8EE), kTextScale);
+    cjk::Text(st.canvas, shown, (float)kFieldX + 6, (float)kFieldY + 7, Rgba(0xE8E8EE),
+              kTextScale);
 
-    const float caretX = (float)kFieldX + 6 + st.canvas.TextWidth(shown, kTextScale) + 2.0f;
+    const float caretX =
+        (float)kFieldX + 6 + cjk::TextWidth(shown, kTextScale) + 2.0f;
     st.canvas.Fill((int)caretX, kFieldY + 6, 1, (int)(7.0f * kTextScale) + 2, theme.borderEdit);
 
     st.canvas.Text(spec.hint, 8.0f, 66.0f, theme.faint, 1.0f);
@@ -66,7 +70,11 @@ void Paste(PromptState& st) {
         const wchar_t* p = (const wchar_t*)GlobalLock(h);
         if (p) {
             for (const wchar_t* q = p; *q && st.input.size() < 256; ++q) {
-                if (*q >= 32 && *q < 127) st.input.push_back(*q);
+                // Anything printable, including Han; a pasted newline becomes
+                // a space because the field is single-line.
+                wchar_t c = *q;
+                if (c == L'\r' || c == L'\n' || c == L'\t') c = L' ';
+                if (c >= 32 && c != 127) st.input.push_back(c);
             }
             GlobalUnlock(h);
         }
@@ -92,7 +100,15 @@ LRESULT CALLBACK PromptProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (wp == VK_BACK) {
-            if (!st->input.empty()) st->input.pop_back();
+            if (!st->input.empty()) {
+                st->input.pop_back();
+                // Keep surrogate pairs (emoji, rare CJK) whole.
+                if (st->input.size() >= 2 &&
+                    st->input.back() >= 0xDC00 && st->input.back() <= 0xDFFF) {
+                    const wchar_t high = st->input[st->input.size() - 2];
+                    if (high >= 0xD800 && high <= 0xDBFF) st->input.pop_back();
+                }
+            }
             Repaint(*st, hwnd);
             return 0;
         }
@@ -103,12 +119,37 @@ LRESULT CALLBACK PromptProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
+    case WM_PASTE:
+        if (st) {
+            Paste(*st);
+            Repaint(*st, hwnd);
+        }
+        return 0;
+
     case WM_CHAR:
-        if (st && wp >= 32 && wp < 127 && st->input.size() < 256) {
+        // WM_CHAR carries UTF-16: accepting the whole printable range is what
+        // makes Chinese (via paste or IME) work. Surrogates arrive as two
+        // messages and are appended in order.
+        if (st && wp >= 32 && wp != 127 && st->input.size() < 256) {
             st->input.push_back((wchar_t)wp);
             Repaint(*st, hwnd);
         }
         return 0;
+
+    case WM_IME_STARTCOMPOSITION: {
+        if (!st) return 0;
+        HIMC himc = ImmGetContext(hwnd);
+        if (himc) {
+            const std::wstring shown = st->spec->mask ? Masked(st->input) : st->input;
+            COMPOSITIONFORM cf{};
+            cf.dwStyle = CFS_POINT;
+            cf.ptCurrentPos.x = kFieldX + 6 + (LONG)cjk::TextWidth(shown, kTextScale);
+            cf.ptCurrentPos.y = kFieldY + 6;
+            ImmSetCompositionWindow(himc, &cf);
+            ImmReleaseContext(hwnd, himc);
+        }
+        return 0;
+    }
 
     case WM_CLOSE:
         if (st) {
@@ -154,6 +195,7 @@ bool PromptText(const PromptSpec& spec, std::wstring& out) {
 
     PromptState st;
     st.spec = &spec;
+    st.input = spec.initial;
     if (!st.canvas.Resize(spec.width, kHeight)) return false;
 
     RegisterPromptClass();

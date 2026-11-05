@@ -26,6 +26,9 @@ public:
     // Write-through via a temp file + rename, so a crash cannot truncate it.
     bool Save();
 
+    // Copy of the current key/value map, for a background writer.
+    std::map<std::wstring, std::wstring> Snapshot() const;
+
     const std::wstring& path() const { return path_; }
 
 private:

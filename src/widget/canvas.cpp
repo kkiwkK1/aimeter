@@ -85,6 +85,8 @@ void Canvas::Release() {
     if (dc_) { DeleteDC(dc_); dc_ = nullptr; }
     px_ = nullptr;
     w_ = h_ = 0;
+    clipped_ = false;
+    clipX_ = clipY_ = clipW_ = clipH_ = 0;
 }
 
 bool Canvas::Resize(int w, int h) {
@@ -123,12 +125,42 @@ void Canvas::Clear(Color c) {
     std::fill(px_, px_ + (size_t)w_ * h_, c);
 }
 
+void Canvas::SetClip(int x, int y, int w, int h) {
+    if (clipped_) {
+        const int x0 = std::max(x, clipX_);
+        const int y0 = std::max(y, clipY_);
+        const int x1 = std::min(x + std::max(w, 0), clipX_ + clipW_);
+        const int y1 = std::min(y + std::max(h, 0), clipY_ + clipH_);
+        clipX_ = x0;
+        clipY_ = y0;
+        clipW_ = std::max(0, x1 - x0);
+        clipH_ = std::max(0, y1 - y0);
+    } else {
+        clipX_ = x;
+        clipY_ = y;
+        clipW_ = std::max(0, w);
+        clipH_ = std::max(0, h);
+        clipped_ = true;
+    }
+}
+
+void Canvas::ResetClip() {
+    clipped_ = false;
+    clipX_ = clipY_ = clipW_ = clipH_ = 0;
+}
+
 void Canvas::Fill(int x, int y, int w, int h, Color c) {
     if (!px_ || w <= 0 || h <= 0) return;
     int x0 = std::max(x, 0);
     int y0 = std::max(y, 0);
     int x1 = std::min(x + w, w_);
     int y1 = std::min(y + h, h_);
+    if (clipped_) {
+        x0 = std::max(x0, clipX_);
+        y0 = std::max(y0, clipY_);
+        x1 = std::min(x1, clipX_ + clipW_);
+        y1 = std::min(y1, clipY_ + clipH_);
+    }
     if (x0 >= x1 || y0 >= y1) return;
     for (int yy = y0; yy < y1; ++yy) {
         Color* row = px_ + (size_t)yy * w_;

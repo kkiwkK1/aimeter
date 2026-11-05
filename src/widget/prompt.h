@@ -9,6 +9,7 @@ namespace wg {
 struct PromptSpec {
     std::wstring label;                              // e.g. L"DEEPSEEK API KEY"
     std::wstring hint = L"ENTER SAVE   ESC CANCEL";
+    std::wstring initial;                            // pre-filled / editable text
     bool mask = false;                               // show *** instead of the text
     bool saved = false;                              // draw a green "SAVED" tag
     int  width = 360;

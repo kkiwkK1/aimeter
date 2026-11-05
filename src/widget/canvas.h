@@ -80,6 +80,12 @@ public:
     // Track bar; frac < 0 draws the track only, frac > 1 is clamped.
     void Bar(int x, int y, int w, int h, float frac, Color fill, Color track);
 
+    // Restricts every following Fill (and therefore Text/Bar/Panel) to a
+    // rectangle, intersected with the current clip. Used by the board to keep
+    // a module inside its card body.
+    void SetClip(int x, int y, int w, int h);
+    void ResetClip();
+
     // The standard 2px-cut rounded panel covering the whole canvas.
     void Panel(const Theme& theme, bool active, bool solid = false);
 
@@ -100,6 +106,8 @@ private:
     HBITMAP prev_ = nullptr;
     Color* px_ = nullptr;
     int w_ = 0, h_ = 0;
+    bool clipped_ = false;
+    int clipX_ = 0, clipY_ = 0, clipW_ = 0, clipH_ = 0;
 };
 
 } // namespace wg

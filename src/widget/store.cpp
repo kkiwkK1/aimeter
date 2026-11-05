@@ -93,11 +93,18 @@ int Store::RemovePrefix(const std::wstring& prefix) {
     return removed;
 }
 
+std::map<std::wstring, std::wstring> Store::Snapshot() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return values_;
+}
+
 bool Store::Save() {
     std::lock_guard<std::mutex> lock(mu_);
     if (path_.empty()) return false;
 
-    std::wstring text;
+    // Keep the BOM: the file is UTF-16 with no code page of its own, and
+    // Notepad / editors otherwise have to guess (and often guess wrong).
+    std::wstring text(1, kBom);
     for (const auto& kv : values_) {
         text += kv.first;
         text += L'=';

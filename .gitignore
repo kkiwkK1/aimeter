@@ -6,3 +6,5 @@ boot.log
 *.log
 .vs/
 build/
+archive/bin/
+archive/data/

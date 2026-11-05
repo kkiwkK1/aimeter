@@ -3,6 +3,7 @@
 #pragma once
 
 #include "widget/canvas.h"
+#include "widget/geom.h"
 
 #include <string>
 #include <vector>
@@ -27,10 +28,16 @@ struct Row {
     Color        accent = 0;     // 0 = theme.ok
     std::wstring noteLeft;       // optional left caption on the same line
     Color        noteColor = 0;  // note color; 0 = theme.faint
+    Color        valueColor = 0; // 0 = theme.text
 };
 
 // Exact height the widget needs for this many rows (bar included).
 int ListHeight(const ListStyle& style, size_t rows);
+
+// Rows only, inside an arbitrary rectangle: no outer panel. Board cards use
+// this so their body can be clipped to the card.
+void DrawRows(Canvas& canvas, const Rect& area, const std::vector<Row>& rows,
+              const ListStyle& style, const Theme& theme);
 
 // Panel + rows. DrawList uses the canvas width, so it fills whatever surface
 // the host gave you.
