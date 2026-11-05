@@ -185,6 +185,18 @@ void Divider(Canvas& canvas, int x0, int x1, int y, const Theme& theme) {
     canvas.HLine(x0, x1, y, theme.border);
 }
 
+void ConsoleFrame(Canvas& canvas, const Rect& body, const Theme& theme) {
+    // Near-opaque so the board's dot grid does not read through the text, but
+    // one step darker than a card so the body reads as a screen, not a panel.
+    canvas.Fill(body.x, body.y, body.w, body.h, Rgba(0x07070B, 235));
+    canvas.Rect(body.x, body.y, body.w, body.h, theme.track);
+}
+
+Rect ConsoleInner(const Rect& body) {
+    return Rect{body.x + kConsolePad, body.y + kConsolePad, body.w - kConsolePad * 2,
+                body.h - kConsolePad * 2};
+}
+
 void AddSlot(Canvas& canvas, const Rect& slot, const Theme& theme) {
     (void)theme;
     DashedH(canvas, slot.x, slot.right(), slot.y, kAddBorder);

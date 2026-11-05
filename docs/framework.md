@@ -40,6 +40,8 @@ src/widget/store.*              <id>.ini，UTF-16 key=value
 src/widget/http.*               阻塞式 HTTPS GET / JSON POST
 src/widget/secrets.*            Credential Manager
 src/widget/prompt.*             模态单行输入框（像素风，支持中文/IME/粘贴）
+src/widget/proc.*               子进程：RunCapture（阻塞取全量）/ RunInherited（接管道）
+                                / Child（长驻，双输出管道，kill-on-close job）
 ```
 
 ## 桌面洞洞板（Module / Board）
@@ -60,6 +62,9 @@ src/widget/module.h         Module / ModuleT<Data> 契约
 - 空白点返回 `HTTRANSPARENT` 交给桌面；卡片/标题条/缩放手柄/Add 槽返回
   `HTCLIENT`。不是 `WS_EX_TRANSPARENT` 整窗穿透。
 - 始终置底（`HWND_BOTTOM` + 前台事件钩子），点击不抢焦点。
+  唯一的例外是"需要键盘的卡片"：`Module::WantsKeyboard()` 认领的点击会让板
+  `SetForegroundWindow` 拿键盘（拿之前先 `PinToDesktop()`，所以仍在最底层），
+  `WM_MOUSEACTIVATE` 对其它所有点击继续回答 `MA_NOACTIVATE`。
 
 ### Module 契约
 
@@ -85,8 +90,23 @@ protected:
 };
 ```
 
+键盘（默认全部不参与，卡片照旧"点了也不抢焦点"）：
+
+```cpp
+virtual bool WantsKeyboard(int x, int y) const;   // 认领这次点击
+virtual void OnFocusChanged(bool focused);
+virtual bool OnKey(const KeyEvent& key);          // VK + ctrl/alt/shift
+virtual void OnChar(wchar_t c);
+virtual void OnPaste(std::wstring_view text);     // 板的 Ctrl+V 代读剪贴板
+virtual bool CaretPos(int* x, int* y) const;      // IME 候选窗锚点
+```
+
 - 双缓冲语义与 `WidgetT` 相同：`RefreshData` 只写 staging，`PaintBodyOf`
   只读 shown；Board 保证不同时执行，所以模块不用锁。
+- 例外：**POWERSHELL 卡**（`src/panels/ps`）直接实现 `Module`，不套
+  `ModuleT`。它的日志是一条流，由 `ps::Session` 自己加锁持有，`refreshSeconds=0`，
+  读线程有新行时调 `RequestRepaint()`（80ms 节流），绘制时取尾部快照。
+  这条路径只适合流式数据，别的新模块仍走 `ModuleT`。
 - Board 负责卡片标题条/外框/裁剪；模块只画 body，并拿到 `body` 矩形。
 - `Status()` 给标题条右侧的文字和颜色；`Menu()/OnMenu` 给卡片右键菜单；
   `hotkeys` 本地 id 1..99，由 Board 分配全局 id。

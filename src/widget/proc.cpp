@@ -215,4 +215,167 @@ int RunInherited(const std::wstring& app, const std::wstring& args, int timeoutM
     return code;
 }
 
+// ---------------------------------------------------------------------------
+// Child: one process, three pipes, kept alive across calls.
+
+Child::~Child() {
+    Shutdown();
+    Close();
+}
+
+bool Child::Start(const std::wstring& app, const std::wstring& args,
+                  const std::wstring& workDir) {
+    Shutdown();
+    Close();
+    error_ = 0;
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE outRead = nullptr, outWrite = nullptr;
+    HANDLE errRead = nullptr, errWrite = nullptr;
+    HANDLE inRead = nullptr, inWrite = nullptr;
+    if (!CreatePipe(&outRead, &outWrite, &sa, 0)) {
+        error_ = GetLastError();
+        return false;
+    }
+    SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+    if (!CreatePipe(&errRead, &errWrite, &sa, 0)) {
+        error_ = GetLastError();
+        CloseHandle(outRead);
+        CloseHandle(outWrite);
+        return false;
+    }
+    SetHandleInformation(errRead, HANDLE_FLAG_INHERIT, 0);
+    if (!CreatePipe(&inRead, &inWrite, &sa, 0)) {
+        error_ = GetLastError();
+        CloseHandle(outRead);
+        CloseHandle(outWrite);
+        CloseHandle(errRead);
+        CloseHandle(errWrite);
+        return false;
+    }
+    SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = inRead;
+    si.hStdOutput = outWrite;
+    si.hStdError = errWrite;
+
+    PROCESS_INFORMATION pi{};
+    std::wstring cmdline = QuoteArg(app) + L" " + args;
+    const BOOL created = CreateProcessW(app.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
+                                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
+                                        workDir.empty() ? nullptr : workDir.c_str(), &si, &pi);
+    error_ = created ? 0 : GetLastError();
+    CloseHandle(inRead);
+    CloseHandle(outWrite);
+    CloseHandle(errWrite);
+    if (!created) {
+        CloseHandle(outRead);
+        CloseHandle(errRead);
+        CloseHandle(inWrite);
+        return false;
+    }
+
+    job_ = MakeKillJob();
+    if (job_) AssignProcessToJobObject(job_, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+
+    proc_ = pi.hProcess;
+    in_ = inWrite;
+    out_ = outRead;
+    err_ = errRead;
+    return true;
+}
+
+bool Child::running() const {
+    if (!proc_) return false;
+    return WaitForSingleObject(proc_, 0) == WAIT_TIMEOUT;
+}
+
+DWORD Child::exitCode() const {
+    if (!proc_) return (DWORD)-1;
+    DWORD code = 0;
+    if (!GetExitCodeProcess(proc_, &code)) return (DWORD)-1;
+    return code;
+}
+
+bool Child::Write(const std::string& bytes) {
+    std::lock_guard<std::mutex> lock(inMu_);
+    if (!in_) return false;
+
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        DWORD wrote = 0;
+        const DWORD chunk = (DWORD)std::min<std::size_t>(bytes.size() - offset, 4096);
+        if (!WriteFile(in_, bytes.data() + offset, chunk, &wrote, nullptr) || wrote == 0) {
+            return false;
+        }
+        offset += wrote;
+    }
+    return true;
+}
+
+int Child::Read(HANDLE pipe, char* buf, int len) {
+    if (!pipe || len <= 0) return 0;
+    DWORD got = 0;
+    if (!ReadFile(pipe, buf, (DWORD)len, &got, nullptr)) return 0;
+    return (int)got;
+}
+
+int Child::ReadOut(char* buf, int len) { return Read(out_, buf, len); }
+int Child::ReadErr(char* buf, int len) { return Read(err_, buf, len); }
+
+void Child::Shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(inMu_);
+        if (in_) {
+            CloseHandle(in_);
+            in_ = nullptr;
+        }
+    }
+    if (!proc_) return;
+
+    // Close stdin first so a plain shell (powershell -Command -) exits on its
+    // own; the kill job then reaps anything it left behind, or the shell itself
+    // when a command is still running.
+    if (WaitForSingleObject(proc_, 120) != WAIT_OBJECT_0) {
+        if (job_) TerminateJobObject(job_, 1);
+        else TerminateProcess(proc_, 1);
+        WaitForSingleObject(proc_, 2000);
+    }
+}
+
+void Child::Close() {
+    {
+        std::lock_guard<std::mutex> lock(inMu_);
+        if (in_) {
+            CloseHandle(in_);
+            in_ = nullptr;
+        }
+    }
+    if (out_) {
+        CloseHandle(out_);
+        out_ = nullptr;
+    }
+    if (err_) {
+        CloseHandle(err_);
+        err_ = nullptr;
+    }
+    if (proc_) {
+        CloseHandle(proc_);
+        proc_ = nullptr;
+    }
+    if (job_) {
+        CloseHandle(job_);
+        job_ = nullptr;
+    }
+}
+
 } // namespace wg

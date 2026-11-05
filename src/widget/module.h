@@ -24,6 +24,7 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -40,6 +41,14 @@ struct MenuItem {
     std::wstring label;
     int id = 0;
     bool checked = false;
+};
+
+// One keyboard event, already stripped of the Windows plumbing.
+struct KeyEvent {
+    unsigned vk = 0;
+    bool ctrl = false;
+    bool alt = false;
+    bool shift = false;
 };
 
 struct ModuleSpec {
@@ -73,14 +82,64 @@ public:
     virtual void OnClick(int x, int y) { (void)x; (void)y; }
     virtual void OnHover(int x, int y) { (void)x; (void)y; }
 
+    // Mouse inside the card body: press, drag with the button held, release.
+    // OnClick keeps its "pressed and released without moving" meaning; a drag
+    // is reported through OnPress/OnDrag instead (text selection).
+    virtual void OnPress(int x, int y) { (void)x; (void)y; }
+    virtual void OnDrag(int x, int y) { (void)x; (void)y; }
+
+    // Keyboard. The board focuses a card only after a click whose point the
+    // module claimed with WantsKeyboard(), so every other card (and every other
+    // pixel of the board) keeps the "a click never steals focus" rule. While a
+    // card is focused the board forwards keys, characters, pasted text and the
+    // IME composition position to it.
+    virtual bool WantsKeyboard(int x, int y) const {
+        (void)x;
+        (void)y;
+        return false;
+    }
+    virtual void OnFocusChanged(bool focused) { (void)focused; }
+    virtual bool OnKey(const KeyEvent& key) {
+        (void)key;
+        return false;
+    }
+    virtual void OnChar(wchar_t c) { (void)c; }
+    virtual void OnPaste(std::wstring_view text) { (void)text; }
+    // Caret in body-local pixels; the board anchors the IME window there.
+    virtual bool CaretPos(int* x, int* y) const {
+        (void)x;
+        (void)y;
+        return false;
+    }
+
     // Host plumbing. Bound by the board before Load().
     void Bind(Store* store, std::function<void()> repaint) {
         store_ = store;
         repaint_ = std::move(repaint);
     }
+    // Separate setter: the board binds this after the module is in its list, so
+    // the callback can address the card by index.
+    void BindFocus(std::function<void()> focus) { focus_ = std::move(focus); }
+    void RequestFocus() const {
+        if (focus_) focus_();
+    }
+    // Ctrl+V is read by the board; Ctrl+C in a card goes through here, so a
+    // module can put a selection on the clipboard without opening it itself.
+    void BindClipboard(std::function<void(std::wstring_view)> copy) {
+        copy_ = std::move(copy);
+    }
+    void CopyToClipboard(std::wstring_view text) const {
+        if (copy_ && !text.empty()) copy_(text);
+    }
     Store& store() { return *store_; }
     bool expanded() const { return expanded_; }
     void SetExpanded(bool on) { expanded_ = on; }
+    bool focused() const { return focused_; }
+    bool caretOn() const { return caretOn_; }
+    void SetFocusState(bool focused, bool caretOn) {
+        focused_ = focused;
+        caretOn_ = caretOn;
+    }
     void RequestRepaint() const {
         if (repaint_) repaint_();
     }
@@ -88,7 +147,11 @@ public:
 private:
     Store* store_ = nullptr;
     bool expanded_ = false;
+    bool focused_ = false;
+    bool caretOn_ = false;
     std::function<void()> repaint_;
+    std::function<void()> focus_;
+    std::function<void(std::wstring_view)> copy_;
 };
 
 template <class Data>

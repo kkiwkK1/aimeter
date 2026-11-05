@@ -1,9 +1,10 @@
 # Desktop Board（desk.exe）
 
 > 一块常驻桌面层的**洞洞板**：一个进程、一块板、若干可自由摆放的模块卡片。
-> 当前模块：**AiMeter**（DeepSeek / Codex / CommandCode / 本机 token）和
-> **Server Status**（SSH 服务器状态）。
-> 约 **20 MB 工作集、空闲 0% CPU、不抢焦点、始终置底**。
+> 当前模块：**AiMeter**（DeepSeek / Codex / CommandCode / 本机 token）、
+> **Server Status**（SSH 服务器状态）和 **PowerShell**（常驻 pwsh 控制台）。
+> 约 **20 MB 工作集、空闲 0% CPU、不抢焦点、始终置底**（PS 卡另带一个常驻
+> pwsh 子进程，见下文）。
 
 ![桌面洞洞板](docs/desk-board.png)
 
@@ -33,7 +34,7 @@
 
 | 产物 | 说明 |
 |---|---|
-| `desk.exe` | 洞洞板 + Account / Servers 卡片 |
+| `desk.exe` | 洞洞板 + Account / Servers / PowerShell 卡片 |
 | `srvctl.exe` | 命令行搭档：status / exec / ssh / hosts / doctor |
 | `archive/` | 旧 aimeter/server/sshpad/clock、AI Mini、旧 host 框架和旧 exe；只作参考，不再构建 |
 
@@ -58,7 +59,8 @@ build\bin\desk.exe
 | 拖板标题条 | 移动整块板 |
 | 拖板右下角 | 缩放板；最小 400×420，最大当前显示器工作区 |
 | 左键卡片标题条右侧 `+`/`-` | 展开/收起该卡片详情 |
-| 右键卡片 | Settings（API Key / SSH Hosts）、Details、Refresh、Remove card |
+| 左键 PS 卡命令行区域 | 把键盘交给这张卡，接着就能直接打字（光标闪在输入行） |
+| 右键卡片 | 模块菜单（`Type here` / Settings 等）、Details、Refresh、Remove card |
 | 右键板标题条 / 托盘 | Add module、Tidy board、Refresh all、Show grid、Empty area passes clicks、Start with Windows、Exit |
 | 左键虚线 `ADD MODULE` 槽 | 打开同一个板菜单 |
 | `Ctrl+Alt+W` | 打开板菜单 |
@@ -101,6 +103,33 @@ build\bin\desk.exe
 
 详细配置、探测脚本和排错见 [docs/server.md](docs/server.md)。
 
+### PowerShell（PS 控制台）
+
+一张常驻的 pwsh 卡：启动时拉起一个长驻 shell，**点一下卡片的命令行区域就能直接打字**，
+输出（stdout + stderr）实时滚到卡面上，`cd` / 变量 / 导入的模块都跨命令保留。
+
+- shell 解析顺序：`ps.ini` 的 `shell=` → `%PWSH_EXE%` → PATH 上的 `pwsh`
+  → `%ProgramFiles%\PowerShell\7\pwsh.exe` → `L:\powershell\pwsh.exe`
+  → 5.1 的 `System32\WindowsPowerShell\v1.0\powershell.exe`。
+- 以 `-NoLogo -NoProfile -NonInteractive -NoExit -Command -` 运行：
+  不加载 profile、不打印 banner；`Read-Host` / `-Confirm` 会**直接报错**而不是
+  把卡片挂住。工作目录是 `%USERPROFILE%`（像终端一样从用户目录起步）。
+- 输入：`Enter` 执行、`↑`/`↓` 历史、`←`/`→`/`Home`/`End` 移动光标、
+  `Backspace`/`Delete`、`Ctrl+V` 粘贴、`Ctrl+L` 清屏、`Esc` 清空当前行。
+  打字时输入行前面是绿色 `>` 和蓝色光标，执行后自动清空等下一条。
+- 选中：在正文上**按住左键拖动**即可选中（蓝色高亮，可跨行，新输出不会让选中错位）；
+  `Ctrl+C` 有选中就复制、没选中就清当前行，`Ctrl+A` 全选可见行。
+- 卡片菜单：`Type here`（鼠标不在卡上时也能拿键盘）、`Run system test`（一行体检：
+  PS 版本 / 主机名 / 已开机小时 / C: 剩余 / 当前目录）、`Clear log`、`Restart shell`。
+- 焦点：**只有点中这张卡的命令行区域，板才拿键盘**；其余位置照旧不抢焦点。
+  拿到键盘后板仍贴在最底层，点别处 / 开菜单 / 失去焦点立刻释放。
+- 收起 6 行、展开 14 行；超长行按卡片宽度截断（终端语义，不折行）；
+  缓冲保留最近 500 行。
+- 输出不做定时轮询：读线程收到新行才请求重绘，空闲时不占 CPU。
+
+状态值：`PWSH 7.6`（运行中，绿）/ `NO SHELL`（找不到或启动失败，红）/
+`EXITED`（shell 已退出，红，`Restart shell` 恢复）。
+
 ## 配置
 
 配置文件都在 exe 同目录；目录不可写时回退到 `%APPDATA%\Desktop Desk`。
@@ -122,10 +151,15 @@ card.servers.x=380
 card.servers.y=32
 card.servers.visible=1
 card.servers.expanded=0
+card.ps.x=392
+card.ps.y=128
+card.ps.visible=1
+card.ps.expanded=0
 ```
 
 模块自己的数据仍在原来的文件里：`aimeter.ini`（余额快照、token 快照）、
-`server.ini`（hosts/ssh/key/timeout）。旧文件不需要迁移。
+`server.ini`（hosts/ssh/key/timeout）、`ps.ini`（`shell=` 显式路径、
+`autostart=0` 推迟到第一条命令才拉起 shell）。旧文件不需要迁移。
 
 **不要和新旧组件同时运行**：新旧都会更新同一份 `aimeter.ini` 快照；首次运行
 会清掉旧的失效自启项，并写 `Desktop Desk`。
@@ -232,18 +266,20 @@ build.bat test       rem 额外跑无窗口测试，产出 build\preview.bmp / d
 src/apps/desk/main.cpp      注册模块（一行一个）
 src/panels/account/         Account 卡片 + 视图
 src/panels/servers/         Servers 卡片 + 视图
-src/widget/board.*          洞洞板宿主：窗口、调度、拖动、菜单、托盘、持久化
+src/panels/ps/              PowerShell 卡片 + 控制台视图（内联输入）
+src/widget/board.*          洞洞板宿主：窗口、调度、拖动、菜单、托盘、键盘焦点、持久化
 src/widget/board_layout.*   纯布局：吸附、避让、命中测试
-src/widget/skin.*           板面/卡片/行/详情/Add 槽的视觉令牌
-src/widget/module.h         Module / ModuleT<Data> 契约
+src/widget/skin.*           板面/卡片/行/详情/控制台/Add 槽的视觉令牌
+src/widget/module.h         Module / ModuleT<Data> 契约（含键盘钩子）
 src/widget/geom.h           Rect
 src/widget/appenv.*         配置目录、自启
 src/widget/                 其余框架（canvas/cjk/view/layout/store/http/secrets/prompt/proc）
-src/data/                   共享数据源（aimeter / server）
+src/data/                   共享数据源（aimeter / server / ps）
 src/cli/                    srvctl
 archive/                    旧组件/实验/文档/二进制（不参与构建）
 tests/board_layout.cpp      布局/裁剪/命中的无窗口测试
 tests/desk_render.cpp       整板渲染测试（BMP）
+tests/ps_tests.cpp          解码/ANSI/切行/行编辑器 + 常驻 shell 端到端测试
 tools/new-panel.ps1         新模块脚手架
 tools/bench-desktop.ps1     资源/空闲 CPU 采样
 tools/sign-local.ps1        Smart App Control 下的本地签名
@@ -264,9 +300,17 @@ archive/docs/sshpad.md      SSH Pad（已归档，不构建）
 - 退出时如果 SSH 探测在飞，最多等一个 8s 探测超时。
 - Servers 只支持 Linux 目标（读 `/proc`），最多 8 台；`srvctl` 最多 32 台。
 - CommandCode 使用未公开的 `/alpha` 接口，字段变化时该行显示 `NO DATA`。
+- PS 卡带着一个常驻子进程：pwsh 7 空闲约 **99 MB 工作集 / 27 线程**（5.1 约
+  72 MB）。想省内存把 `ps.ini` 设 `autostart=0`，第一条命令时才会拉起。
+- PS 卡要先点中卡片的命令行区域才收键盘；这一刻板会被激活（仍贴底，不改变前台
+  窗口的可见顺序），点别处 / 开菜单即释放。它没有滚轮回滚，只保留最近 500 行；
+  选中按当前可见的行取文本；超长行按宽度截断；命令必须自己结束（`Read-Host` 会
+  报错，后台任务请用 `Start-Job`）；输出用 5×7 像素字体，所以**只有大写**。
 - 不并入 SSH Pad / Clock / AI Mini；它们已归档在 `archive/`，不再构建；需要时按
-  `Module` 契约重新接入（终端卡需要更宽的板）。
-- Smart App Control 开启时，重建的 exe 需要重签。
+  `Module` 契约重新接入。
+- Smart App Control 开启时（本机 `VerifiedAndReputablePolicyState=1`），重建的 exe
+  要用 `tools\sign-local.ps1` 重签；自签根证书不在信任库里，SAC 仍可能拦住新
+  hash。若被拦，见 `docs/desk.md` 的排错一节。
 - 新旧组件不要同时运行（共享 `aimeter.ini` 的当日快照）。
 
 ## License

@@ -5,6 +5,7 @@
 #include "widget/skin.h"
 
 #include <shellapi.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -28,6 +29,8 @@ constexpr UINT kMsgModuleDone = WM_APP + 1;
 constexpr UINT kMsgTray = WM_APP + 2;
 constexpr UINT kMsgDirty = WM_APP + 3;
 constexpr UINT_PTR kTimerId = 1;
+constexpr UINT_PTR kCaretTimerId = 2;
+constexpr UINT kCaretBlinkMs = 530;
 
 constexpr int kHotkeyRefresh = 1;
 constexpr int kHotkeyMenu = 2;
@@ -132,6 +135,18 @@ private:
     void ResetGesture();
     void CancelGesture();
 
+    // Keyboard focus. The board only ever takes focus for a card that claimed
+    // the click with Module::WantsKeyboard(); the window itself stops being
+    // WS_EX_NOACTIVATE, but WM_MOUSEACTIVATE still says "don't activate" for
+    // every other click, so cards stay click-through as far as focus goes.
+    void FocusCard(int index);
+    void BlurCard();
+    void PasteIntoFocusedCard();
+    void SetClipboardText(std::wstring_view text);
+    bool FocusedBodyRect(Rect* body) const;
+    void ForwardKey(WPARAM vk);
+    void ForwardChar(wchar_t c);
+
     void NotifyDirty() {
         if (hwnd_) PostMessageW(hwnd_, kMsgDirty, 0, 0);
     }
@@ -165,6 +180,8 @@ private:
     std::vector<Rect> addSlots_;
 
     int hoverCard_ = -1;
+    int focusCard_ = -1;
+    bool caretOn_ = true;
     std::chrono::steady_clock::time_point lastPaint_{};
 
     board::HitKind pressKind_ = board::HitKind::Empty;
@@ -193,6 +210,7 @@ private:
 
 namespace {
 Board* g_board = nullptr;
+
 }
 
 int Board::Exec(std::vector<std::unique_ptr<Module>> modules, BoardOptions options) {
@@ -224,6 +242,9 @@ int Board::Exec(std::vector<std::unique_ptr<Module>> modules, BoardOptions optio
             rt->spec.configFile.empty() ? rt->spec.id + L".ini" : rt->spec.configFile;
         rt->store.Open(configDir_ + L"\\" + file);
         rt->module->Bind(&rt->store, [this] { NotifyDirty(); });
+        const int index = (int)modules_.size();
+        rt->module->BindFocus([this, index] { FocusCard(index); });
+        rt->module->BindClipboard([this](std::wstring_view text) { SetClipboardText(text); });
         modules_.push_back(std::move(rt));
     }
 
@@ -245,7 +266,10 @@ int Board::Exec(std::vector<std::unique_ptr<Module>> modules, BoardOptions optio
     wc.lpszClassName = className_.c_str();
     RegisterClassExW(&wc);
 
-    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    // WS_EX_NOACTIVATE is deliberately absent: a card that owns the keyboard
+    // (the console) needs real focus. Every other click answers MA_NOACTIVATE
+    // in WM_MOUSEACTIVATE, so the board still never steals focus by itself.
+    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     hwnd_ = CreateWindowExW(exStyle, className_.c_str(), options_.title.c_str(), WS_POPUP,
                             boardRect_.x, boardRect_.y, boardRect_.w, boardRect_.h, nullptr,
                             nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -340,24 +364,27 @@ void Board::LoadBoardRect(bool hadState) {
 }
 
 void Board::PlaceMissingCards() {
-    int x = skin::kBoardPad + 6;
-    int y = skin::kBoardTitleH + 6;
-    int rowH = 0;
+    // Cards added by a newer build have no saved position yet. Place them in
+    // the first free slot instead of the old top-left flow, which used to drop
+    // a new card on top of whatever was already there.
+    const Rect interior = Interior();
+    std::vector<Rect> occupied;
+    for (const auto& rt : modules_) {
+        if (!rt->state.visible || !rt->state.placed) continue;
+        occupied.push_back(board::CardRect(rt->state.x, rt->state.y, rt->spec.width,
+                                           rt->module->BodyHeight()));
+    }
 
     for (auto& rt : modules_) {
         if (!rt->state.visible || rt->state.placed) continue;
-        const int w = rt->spec.width;
-        const int h = skin::CardHeight(rt->module->BodyHeight());
-        if (x + w > boardRect_.w - skin::kBoardPad) {
-            x = skin::kBoardPad + 6;
-            y += rowH + skin::kCardGap;
-            rowH = 0;
-        }
-        rt->state.x = x;
-        rt->state.y = y;
-        x += w + skin::kCardGap;
-        rowH = std::max(rowH, h);
+        const int bodyH = rt->module->BodyHeight();
+        const POINT p = board::ResolveDrop(interior.x + 6, interior.y + 6, rt->spec.width,
+                                           skin::CardHeight(bodyH), occupied, interior, 12,
+                                           options_.grid);
+        rt->state.x = p.x;
+        rt->state.y = p.y;
         rt->state.placed = true;
+        occupied.push_back(board::CardRect(p.x, p.y, rt->spec.width, bodyH));
     }
 }
 
@@ -841,6 +868,108 @@ void Board::Shutdown() {
     g_board = nullptr;
 }
 
+void Board::FocusCard(int index) {
+    if (index < 0 || index >= (int)modules_.size()) return;
+    if (focusCard_ == index) return;
+    BlurCard();
+
+    focusCard_ = index;
+    caretOn_ = true;
+    modules_[index]->module->SetFocusState(true, true);
+    modules_[index]->module->OnFocusChanged(true);
+    if (hwnd_) SetTimer(hwnd_, kCaretTimerId, kCaretBlinkMs, nullptr);
+
+    // Drop to the desktop layer *first*, then take the keyboard: moving the
+    // window afterwards would undo the activation we just asked for.
+    if (hwnd_) {
+        PinToDesktop();
+        SetForegroundWindow(hwnd_);
+        SetFocus(hwnd_);
+    }
+    Render();
+}
+
+void Board::BlurCard() {
+    if (focusCard_ < 0) return;
+    const int index = focusCard_;
+    focusCard_ = -1;
+    if (hwnd_) KillTimer(hwnd_, kCaretTimerId);
+    modules_[index]->module->SetFocusState(false, false);
+    modules_[index]->module->OnFocusChanged(false);
+    Render();
+}
+
+bool Board::FocusedBodyRect(Rect* body) const {
+    if (focusCard_ < 0) return false;
+    for (const VisibleCard& vc : visible_) {
+        if (vc.module != focusCard_) continue;
+        if (body) *body = skin::CardBody(vc.rect);
+        return true;
+    }
+    return false;
+}
+
+void Board::PasteIntoFocusedCard() {
+    if (focusCard_ < 0) return;
+    if (!OpenClipboard(hwnd_)) return;
+
+    std::wstring text;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+        if (const wchar_t* p = (const wchar_t*)GlobalLock(h)) {
+            text = p;
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    if (text.empty()) return;
+
+    modules_[focusCard_]->module->OnPaste(text);
+    Render();
+}
+
+void Board::SetClipboardText(std::wstring_view text) {
+    if (text.empty()) return;
+    if (!OpenClipboard(hwnd_)) return;
+    EmptyClipboard();
+
+    const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    if (HGLOBAL block = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+        if (void* dst = GlobalLock(block)) {
+            memcpy(dst, text.data(), text.size() * sizeof(wchar_t));
+            static_cast<wchar_t*>(dst)[text.size()] = L'\0';
+            GlobalUnlock(block);
+            if (!SetClipboardData(CF_UNICODETEXT, block)) GlobalFree(block);
+        } else {
+            GlobalFree(block);
+        }
+    }
+    CloseClipboard();
+}
+
+void Board::ForwardKey(WPARAM vk) {
+    if (focusCard_ < 0) return;
+
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+    // Paste lives here: a module should not have to open the clipboard itself.
+    if (ctrl && !alt && vk == 'V') {
+        PasteIntoFocusedCard();
+        return;
+    }
+
+    const KeyEvent key{(unsigned)vk, ctrl, alt, shift};
+    if (modules_[focusCard_]->module->OnKey(key)) Render();
+}
+
+void Board::ForwardChar(wchar_t c) {
+    if (focusCard_ < 0) return;
+    if (c < 32 || c == 127) return;
+    modules_[focusCard_]->module->OnChar(c);
+    Render();
+}
+
 board::Hit Board::HitAt(int x, int y) {
     std::vector<Rect> cards;
     cards.reserve(visible_.size());
@@ -1087,6 +1216,12 @@ LRESULT CALLBACK Board::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (rt.dueAt == 0 || rt.dueAt <= now) host->StartRefresh(i);
             }
             host->ArmTimer();
+        } else if (wp == kCaretTimerId) {
+            host->caretOn_ = !host->caretOn_;
+            if (host->focusCard_ >= 0) {
+                host->modules_[host->focusCard_]->module->SetFocusState(true, host->caretOn_);
+            }
+            host->Render();
         }
         return 0;
 
@@ -1120,14 +1255,51 @@ LRESULT CALLBACK Board::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return HTCLIENT;
     }
 
-    case WM_MOUSEACTIVATE:
+    case WM_MOUSEACTIVATE: {
+        // Only a click the module claims for the keyboard may activate the
+        // board; everything else keeps the "clicking a card steals nothing"
+        // behaviour it had while the window was WS_EX_NOACTIVATE.
+        POINT pt{};
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        const board::Hit hit = host->HitAt(pt.x, pt.y);
+        if (hit.kind == board::HitKind::Card && hit.card >= 0) {
+            const auto& vc = host->visible_[hit.card];
+            const Rect body = skin::CardBody(vc.rect);
+
+            if (host->modules_[vc.module]->module->WantsKeyboard(pt.x - body.x,
+                                                                 pt.y - body.y)) {
+                return MA_ACTIVATE;
+            }
+        }
         return MA_NOACTIVATE;
+    }
 
     case WM_LBUTTONDOWN: {
         const int x = GET_X_LPARAM(lp);
         const int y = GET_Y_LPARAM(lp);
         const board::Hit hit = host->HitAt(x, y);
+
         if (hit.kind == board::HitKind::Empty) return 0;
+
+        // Focus follows the click: a card that wants the keyboard takes it,
+        // anything else drops it.
+        if (hit.kind == board::HitKind::Card || hit.kind == board::HitKind::CardTitle) {
+            const auto& vc = host->visible_[hit.card];
+            bool wants = false;
+            if (hit.kind == board::HitKind::Card) {
+                const Rect body = skin::CardBody(vc.rect);
+                wants = host->modules_[vc.module]->module->WantsKeyboard(x - body.x,
+                                                                         y - body.y);
+            }
+            if (wants) {
+                if (host->focusCard_ != vc.module) host->FocusCard(vc.module);
+            } else {
+                host->BlurCard();
+            }
+        } else {
+            host->BlurCard();
+        }
 
         host->pressKind_ = hit.kind;
         host->pressCard_ = hit.kind == board::HitKind::CardTitle ||
@@ -1154,6 +1326,11 @@ LRESULT CALLBACK Board::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 } else {
                     host->pressToggle_ = true;
                 }
+            } else {
+                // Card body: let the module start whatever gesture it owns
+                // (the console anchors a text selection here).
+                const Rect body = skin::CardBody(vc.rect);
+                rt.module->OnPress(x - body.x, y - body.y);
             }
         } else if (hit.kind == board::HitKind::BoardTitle) {
             host->draggingBoard_ = true;
@@ -1187,7 +1364,13 @@ LRESULT CALLBACK Board::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
 
             if (host->pressMoved_) {
-                if (host->dragCard_ >= 0) {
+                if (host->pressKind_ == board::HitKind::Card && host->pressCard_ >= 0) {
+                    // A drag inside a card body is the card's business: the
+                    // console uses it to extend a text selection.
+                    const auto& vc = host->visible_[host->pressCard_];
+                    const Rect body = skin::CardBody(vc.rect);
+                    host->modules_[vc.module]->module->OnDrag(x - body.x, y - body.y);
+                } else if (host->dragCard_ >= 0) {
                     auto& rt = *host->modules_[host->dragCard_];
                     const int nx = board::Snap(host->pressCardX_ + dx, host->options_.grid);
                     const int ny = board::Snap(host->pressCardY_ + dy, host->options_.grid);
@@ -1333,8 +1516,58 @@ LRESULT CALLBACK Board::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_KILLFOCUS:
+
+        // Focus left the board (another app, a menu): stop owning the keyboard.
+        host->BlurCard();
         host->PinToDesktop();
         return 0;
+
+    case WM_ACTIVATE:
+
+        // Activation must not lift the board out of the desktop layer.
+        if (LOWORD(wp) != WA_INACTIVE) host->PinToDesktop();
+        return 0;
+
+
+    case WM_KEYDOWN:
+        if (host->focusCard_ >= 0) {
+            host->ForwardKey(wp);
+            return 0;
+        }
+        break;
+
+    case WM_CHAR:
+        if (host->focusCard_ >= 0) {
+            host->ForwardChar((wchar_t)wp);
+            return 0;
+        }
+        break;
+
+    case WM_IME_CHAR:
+        if (host->focusCard_ >= 0) {
+            host->ForwardChar((wchar_t)wp);
+            return 0;
+        }
+        break;
+
+    case WM_IME_STARTCOMPOSITION: {
+        if (host->focusCard_ < 0) return 0;
+        int cx = 0;
+        int cy = 0;
+        Rect body;
+        if (host->modules_[host->focusCard_]->module->CaretPos(&cx, &cy) &&
+            host->FocusedBodyRect(&body)) {
+            if (HIMC himc = ImmGetContext(hwnd)) {
+                COMPOSITIONFORM cf{};
+                cf.dwStyle = CFS_POINT;
+                cf.ptCurrentPos.x = body.x + cx;
+                cf.ptCurrentPos.y = body.y + cy;
+                ImmSetCompositionWindow(himc, &cf);
+                ImmReleaseContext(hwnd, himc);
+            }
+        }
+        return 0;
+    }
 
     case WM_DISPLAYCHANGE:
         host->ClampToWorkArea(true);

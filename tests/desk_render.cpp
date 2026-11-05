@@ -3,12 +3,15 @@
 #include "bmp.h"
 
 #include "panels/account/account_view.h"
+#include "panels/ps/ps_view.h"
 #include "panels/servers/servers_view.h"
 
 #include "widget/skin.h"
 
 #include "data/aimeter/aimeter_data.h"
 #include "data/aimeter/token_usage.h"
+#include "data/ps/input.h"
+#include "data/ps/shell.h"
 #include "data/server/providers.h"
 #include "data/server/status_view.h"
 
@@ -69,6 +72,31 @@ server::ServerData MakeServers() {
     return data;
 }
 
+std::vector<ps::Line> MakeConsole() {
+    std::vector<ps::Line> lines = {
+        ps::Line{L"-- PWSH 7.6  L:\\powershell\\pwsh.exe"},
+        ps::Line{L"> \"C:\\Users\\kkiwkK1\\Desktop\"", ps::Kind::Echo},
+        ps::Line{L"PS   7.6.9"},
+        ps::Line{L"HOST \u9065\u9065\u9886\u5148"},
+        ps::Line{L"UP   102h"},
+        ps::Line{L"C:   328.4GB FREE"},
+        ps::Line{L"DIR  C:\\Users\\kkiwkK1\\Desktop"},
+        ps::Line{L"> Get-ChildItem *.png"},
+        ps::Line{L"board.png"},
+        ps::Line{L"desk-board.png"},
+        ps::Line{L"desk-board-mockup.png"},
+        ps::Line{L"screenshot.png"},
+        ps::Line{L"Get-Item: Cannot find path 'C:\\nope' because it does not exist.",
+                 ps::Kind::Err, wg::Rgba(0xF87171)},
+        ps::Line{L"> "},
+    };
+    // Sequence ids matter for the selection: the view matches them against the
+    // selection's cells.
+    unsigned long long seq = 0;
+    for (ps::Line& line : lines) line.seq = ++seq;
+    return lines;
+}
+
 void DrawCard(wg::Canvas& canvas, const wg::Rect& card, const std::wstring& title,
               const std::wstring& status, wg::Color color, bool expanded,
               const wg::Theme& theme, const std::function<void(const wg::Rect&)>& body) {
@@ -88,17 +116,24 @@ int wmain(int argc, wchar_t** argv) {
     wg::Theme theme;
     const aimeter::AimeterData account = MakeAccount();
     const server::ServerData servers = MakeServers();
+    const std::vector<ps::Line> console = MakeConsole();
 
     const int accountExpanded = wg::skin::CardHeight(
         account_view::BodyHeight(account, true));
     const int serversExpanded = wg::skin::CardHeight(
         servers_view::BodyHeight(servers, true));
+    const int psCollapsed = wg::skin::CardHeight(ps_view::BodyHeight(false));
+    const int psExpanded = wg::skin::CardHeight(ps_view::BodyHeight(true));
     if (accountExpanded != 269) {
         wprintf(L"[desk-test] unexpected account height %d\n", accountExpanded);
         return 1;
     }
     if (serversExpanded != 222) {
         wprintf(L"[desk-test] unexpected servers height %d\n", serversExpanded);
+        return 1;
+    }
+    if (psCollapsed != 146 || psExpanded != 266) {
+        wprintf(L"[desk-test] unexpected console height %d/%d\n", psCollapsed, psExpanded);
         return 1;
     }
 
@@ -108,8 +143,8 @@ int wmain(int argc, wchar_t** argv) {
     wg::skin::BoardChrome(canvas, wg::Rect{0, 0, 760, 800}, L"DESKTOP BOARD",
                           L"RIGHT CLICK FOR MODULES", theme, true);
 
-    wg::skin::AddSlot(canvas, wg::Rect{20, 370, 340, 118}, theme);
-    wg::skin::AddSlot(canvas, wg::Rect{380, 330, 340, 118}, theme);
+    wg::skin::AddSlot(canvas, wg::Rect{20, 600, 340, 118}, theme);
+    wg::skin::AddSlot(canvas, wg::Rect{380, 440, 340, 118}, theme);
 
     DrawCard(canvas, wg::Rect{20, 32, 340, accountExpanded}, L"ACCOUNT",
              account_view::Status(account, theme).text,
@@ -125,12 +160,40 @@ int wmain(int argc, wchar_t** argv) {
                  servers_view::DrawBody(servers, canvas, body, theme, true);
              });
 
+    // A half-typed command: the caret sits right after the last character.
+    ps::LineEditor typed;
+    typed.InsertText(L"Get-Date -Format HH:mm");
+    typed.End();
+
+    // The card below shows a selection over the first two output lines.
+    ps::Selection selected;
+    selected.active = true;
+    selected.anchor = ps::Cell{console[0].seq, 0};
+    selected.focus = ps::Cell{console[1].seq, 12};
+
+    DrawCard(canvas, wg::Rect{20, 321, 340, psExpanded}, L"POWERSHELL",
+             ps_view::Status(true, true, L"PWSH 7.6", theme).text,
+             ps_view::Status(true, true, L"PWSH 7.6", theme).color, true, theme,
+             [&](const wg::Rect& body) {
+                 ps_view::DrawBody(console, typed.text(), (int)typed.caretPixelWidth(), true,
+                                   true, selected, canvas, body, theme, true);
+             });
+
+    DrawCard(canvas, wg::Rect{380, 274, 340, psCollapsed}, L"POWERSHELL",
+             ps_view::Status(false, true, L"PWSH 7.6", theme).text,
+             ps_view::Status(false, true, L"PWSH 7.6", theme).color, false, theme,
+             [&](const wg::Rect& body) {
+                 ps_view::DrawBody(console, L"", 0, false, false, ps::Selection{}, canvas, body,
+                                   theme, false);
+             });
+
     if (!test::WriteBmp(path, canvas, wg::Rgba(0x101820))) {
         wprintf(L"[desk-test] cannot write %ls\n", path);
         return 1;
     }
 
-    wprintf(L"[desk-test] account=%d servers=%d\n", accountExpanded, serversExpanded);
+    wprintf(L"[desk-test] account=%d servers=%d ps=%d/%d\n", accountExpanded,
+            serversExpanded, psCollapsed, psExpanded);
     wprintf(L"[desk-test] wrote %ls (%dx%d)\n", path, canvas.width(), canvas.height());
     return 0;
 }

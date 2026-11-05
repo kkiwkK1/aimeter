@@ -36,6 +36,12 @@ constexpr float kValueScale = 1.5f;
 constexpr float kMetaScale = 1.0f;
 constexpr float kBigScale = 3.0f;
 
+// Console cards: one row of monospace text per pitch. 15 px clears the 14 px
+// CJK mask, so a Chinese error line does not overlap the one above it.
+constexpr int kConsolePad = 4;
+constexpr int kConsolePitch = 15;
+constexpr float kConsoleScale = 1.0f;
+
 // Card outer height for a module body of bodyH pixels.
 int CardHeight(int bodyH);
 
@@ -61,6 +67,11 @@ void Rows(Canvas& canvas, const Rect& body, const std::vector<Row>& rows,
           const Theme& theme);
 
 void Divider(Canvas& canvas, int x0, int x1, int y, const Theme& theme);
+
+// Console body: a darker inset frame shared by terminal-like modules. The
+// module clips its own text to ConsoleInner() and paints line by line.
+void ConsoleFrame(Canvas& canvas, const Rect& body, const Theme& theme);
+Rect ConsoleInner(const Rect& body);
 
 // Dashed "ADD MODULE" tile.
 void AddSlot(Canvas& canvas, const Rect& slot, const Theme& theme);

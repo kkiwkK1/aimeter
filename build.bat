@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 cd /d "%~dp0"
@@ -17,7 +17,7 @@ set "TMP=build\tmp"
 set "TEMP=build\tmp"
 
 set "CXXFLAGS=-std=c++20 -O2 -Wall -Wextra -DNOMINMAX -DUNICODE -D_UNICODE -Isrc"
-set "LIBS=-static -static-libgcc -static-libstdc++ -lshell32 -luser32 -lgdi32 -lole32 -luuid -lwinhttp -ladvapi32 -limm32"
+set "LIBS=-static -static-libgcc -static-libstdc++ -lshell32 -luser32 -lgdi32 -lole32 -luuid -lwinhttp -ladvapi32 -limm32 -lversion"
 set "FW=canvas cjk view layout store http secrets prompt proc skin board board_layout appenv"
 
 echo [build] framework
@@ -36,6 +36,7 @@ echo [build] desk
 if not exist "build\obj\desk" mkdir "build\obj\desk"
 if not exist "build\obj\desk\aim" mkdir "build\obj\desk\aim"
 if not exist "build\obj\desk\srv" mkdir "build\obj\desk\srv"
+if not exist "build\obj\desk\ps" mkdir "build\obj\desk\ps"
 set "DOBJ="
 for %%F in ("src\apps\desk\*.cpp") do (
     g++ %CXXFLAGS% -municode -c "%%F" -o "build\obj\desk\%%~nF.o"
@@ -66,6 +67,12 @@ for %%M in (providers status_view collect) do (
     g++ %CXXFLAGS% -c "src\data\server\%%M.cpp" -o "build\obj\desk\srv\%%M.o"
     if errorlevel 1 exit /b 1
     set "DOBJ=!DOBJ! "build\obj\desk\srv\%%M.o""
+)
+rem The PowerShell card: pipes, decoding, ANSI, line editing.
+for %%M in (text shell input selection) do (
+    g++ %CXXFLAGS% -c "src\data\ps\%%M.cpp" -o "build\obj\desk\ps\%%M.o"
+    if errorlevel 1 exit /b 1
+    set "DOBJ=!DOBJ! "build\obj\desk\ps\%%M.o""
 )
 g++ -municode -mwindows !DOBJ! "build\libwg.a" -o "build\bin\desk.exe.new" %LIBS% -s
 if errorlevel 1 exit /b 1
@@ -120,11 +127,29 @@ if /i "%~1"=="test" (
     if errorlevel 1 exit /b 1
     g++ %CXXFLAGS% -municode -c "src\data\aimeter\providers.cpp" -o "build\obj\test\aimeter_providers.o"
     if errorlevel 1 exit /b 1
+    g++ %CXXFLAGS% -municode -c "src\panels\ps\ps_view.cpp" -o "build\obj\test\ps_view.o"
+    if errorlevel 1 exit /b 1
+    g++ %CXXFLAGS% -municode -c "src\data\ps\input.cpp" -o "build\obj\test\ps_input.o"
+    if errorlevel 1 exit /b 1
+    g++ %CXXFLAGS% -municode -c "src\data\ps\selection.cpp" -o "build\obj\test\ps_selection.o"
+    if errorlevel 1 exit /b 1
     g++ %CXXFLAGS% -municode -c "tests\desk_render.cpp" -o "build\obj\test\desk_render.o"
     if errorlevel 1 exit /b 1
-    g++ -municode -mconsole "build\obj\test\desk_render.o" "build\obj\test\account_view.o" "build\obj\test\servers_view.o" "build\obj\test\status_view.o" "build\obj\test\server_providers.o" "build\obj\test\token_usage.o" "build\obj\test\aimeter_providers.o" "build\libwg.a" -o "build\desk-render-test.exe.new" %LIBS%
+    g++ -municode -mconsole "build\obj\test\desk_render.o" "build\obj\test\account_view.o" "build\obj\test\servers_view.o" "build\obj\test\ps_view.o" "build\obj\test\ps_input.o" "build\obj\test\ps_selection.o" "build\obj\test\status_view.o" "build\obj\test\server_providers.o" "build\obj\test\token_usage.o" "build\obj\test\aimeter_providers.o" "build\libwg.a" -o "build\desk-render-test.exe.new" %LIBS%
     if errorlevel 1 exit /b 1
     move /y "build\desk-render-test.exe.new" "build\desk-render-test.exe" >nul
+    if errorlevel 1 exit /b 1
+
+    echo   - powershell session
+    g++ %CXXFLAGS% -municode -c "src\data\ps\text.cpp" -o "build\obj\test\ps_text.o"
+    if errorlevel 1 exit /b 1
+    g++ %CXXFLAGS% -municode -c "src\data\ps\shell.cpp" -o "build\obj\test\ps_shell.o"
+    if errorlevel 1 exit /b 1
+    g++ %CXXFLAGS% -municode -c "tests\ps_tests.cpp" -o "build\obj\test\ps_tests.o"
+    if errorlevel 1 exit /b 1
+    g++ -municode -mconsole "build\obj\test\ps_tests.o" "build\obj\test\ps_text.o" "build\obj\test\ps_shell.o" "build\obj\test\ps_input.o" "build\obj\test\ps_selection.o" "build\libwg.a" -o "build\ps-test.exe.new" %LIBS%
+    if errorlevel 1 exit /b 1
+    move /y "build\ps-test.exe.new" "build\ps-test.exe" >nul
     if errorlevel 1 exit /b 1
 
     echo   - cli
@@ -153,6 +178,8 @@ if /i "%~1"=="test" (
     "build\board-layout-test.exe"
     if errorlevel 1 exit /b 1
     "build\desk-render-test.exe" "build\desk-board-preview.bmp"
+    if errorlevel 1 exit /b 1
+    "build\ps-test.exe"
     if errorlevel 1 exit /b 1
     "build\cli-test.exe"
     if errorlevel 1 exit /b 1
